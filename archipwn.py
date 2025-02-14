@@ -62,7 +62,7 @@ LIBS_PATH=check_dependencies()
 from pwn import *
 
 # Binary config
-BINARY = "./ch65"  ################## <- change this parametter ################## # -> you should copy the env of your remote target to align stack -> https://stackoverflow.com/questions/17775186/buffer-overflow-works-in-gdb-but-not-without-it/17775966#17775966
+BINARY = "./exemple"  ################## <- change this parametter ################## # -> you should copy the env of your remote target to align stack -> https://stackoverflow.com/questions/17775186/buffer-overflow-works-in-gdb-but-not-without-it/17775966#17775966
 ELF_BINARY = ELF(BINARY)
 DISABLE_ASLR = True
 
@@ -119,17 +119,17 @@ gdb_version = "gdb-multiarch"
 # Attach gdb-multiarch
 gdb_cmd = [
     f"{gdb_version} ", #-> must use gdb-multiarch
-    f"-ex 'symbol-file {BINARY}' ",
-    f"-ex 'set solib-search-path {LIBS_PATH[context.arch]}' ",
-    f"-ex 'set architecture {context.arch}' ",
-    f"-ex 'target remote localhost:{GDB_PORT}' ", 
-    f"-ex 'unset env LINES'", # for stack alignement -> https://stackoverflow.com/questions/17775186/buffer-overflow-works-in-gdb-but-not-without-it/17775966#17775966
-    f"-ex 'unset env COLUMNS'", #for stack alignement -> https://stackoverflow.com/questions/17775186/buffer-overflow-works-in-gdb-but-not-without-it/17775966#17775966
-    "\n".join([f"-ex '{user_line}'" for user_line in user_script])                  
+    f" -ex 'symbol-file {BINARY}' ",
+    f" -ex 'set solib-search-path {LIBS_PATH[context.arch]}' ",
+    f" -ex 'set architecture {context.arch}' ",
+    f" -ex 'target remote localhost:{GDB_PORT}' ", 
+    f" -ex 'unset env LINES' ", # for stack alignement -> https://stackoverflow.com/questions/17775186/buffer-overflow-works-in-gdb-but-not-without-it/17775966#17775966
+    f" -ex 'unset env COLUMNS' ", #for stack alignement -> https://stackoverflow.com/questions/17775186/buffer-overflow-works-in-gdb-but-not-without-it/17775966#17775966
+    " \n ".join([f"-ex '{user_line}'" for user_line in user_script])                  
 ]
 gdb_cmd_line = "".join(gdb_cmd)
 subprocess.Popen(context.terminal + [gdb_cmd_line])
-log.info(f"GDB debugger attached to {GDB_PORT} :\n$ " + "\n".join(gdb_cmd))
- 
-receive = p.recvuntil(b"What is your name ?",timeout=3600) # <- you must be waiting for something, or just do p.interactive()
+log.info(f"GDB debugger attached to {GDB_PORT} :\n$ " + gdb_cmd_line)
+
+receive = p.recvuntil(b" name :",timeout=3600) # <- you must be waiting for something, or just do p.interactive()
 print("<",receive)
