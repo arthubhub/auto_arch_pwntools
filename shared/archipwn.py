@@ -1,135 +1,155 @@
-  ######################
- #### Dependencies ####
-######################
 import shutil
 import sys
-import os, time, subprocess
+import os
+import time
+import subprocess
+from pwn import ELF, context, log, process
 
-import pwnlib.shellcraft
+class MultiArchDebugger:
+    """
+    Automated multi-architecture debugger using QEMU and GDB Multiarch.
 
-def check_dependencies():
-    missing = []
-    libs_path={}
-    required_cmds = [
-        ("qemu-aarch64", "QEMU for ARM64", "sudo apt-get install qemu-aarch64"),
-        ("qemu-arm", "QEMU for ARM (32-bit)", "sudo apt-get install qemu-arm"),
-        ("qemu-i386", "QEMU for x86 (i386)", "sudo apt-get install qemu-i386"),
-        ("qemu-x86_64", "QEMU for x86_64 (amd64)", "sudo apt-get install qemu-x86_64"),
-        ("qemu-mips", "QEMU for MIPS", "sudo apt-get install qemu-mips"),
-        ("qemu-riscv64", "QEMU for RISC-V 64-bit", "sudo apt-get install qemu-riscv64"),
+    Args:
+        binary_path (str): Path to the target binary.
+        gdb_port (int): TCP port for GDB remote. Default 1235.
+        disable_aslr (bool): Whether to disable ASLR via setarch -R. Default True.
+        tmux_split (bool): Whether to launch inside a tmux split. Default True.
+        breakpoints (list[int or str]): List of breakpoints (addresses or symbols). Default [].
+        lib_override (str): Optional custom library path (directory or .so file) to use for the target.
+    """
+    DEFAULT_QEMU = {
+        "arm":     "qemu-arm",
+        "aarch64": "qemu-aarch64",
+        "mips":    "qemu-mips",
+        "riscv64": "qemu-riscv64",
+        "i386":    "qemu-i386",
+        "amd64":   "qemu-x86_64",
+    }
+
+    REQUIRED_CMDS = [
         ("gdb-multiarch", "GDB Multiarch", "sudo apt-get install gdb-multiarch"),
-        ("tmux", "tmux terminal", "sudo apt-get install tmux"),
+        ("tmux",         "tmux terminal",    "sudo apt-get install tmux"),
     ]
-    required_libs = [
-        ("arm", "arm-linux-gnueabihf", "sudo apt-get install libc6-dev-armhf-cross"),
-        ("aarch64", "aarch64-linux-gnu",    "sudo apt-get install libc6-dev-arm64-cross"),
-        ("mips", "mips-linux-gnu",       "sudo apt-get install libc6-dev-mips-cross"),
-        ("riscv64", "riscv64-linux-gnu",    "sudo apt-get install libc6-dev-riscv64-cross"),
-        ("i386", "i386-linux-gnu",       "sudo apt-get install libc6-dev-i386-cross"),
-        ("amd64", "x86_64-linux-gnu",     "sudo apt-get install libc6-dev-amd64-cross"),
+    REQUIRED_LIBS = [
+        ("arm",     "arm-linux-gnueabihf",  "sudo apt-get install libc6-dev-armhf-cross"),
+        ("aarch64", "aarch64-linux-gnu",   "sudo apt-get install libc6-dev-arm64-cross"),
+        ("mips",    "mips-linux-gnu",      "sudo apt-get install libc6-dev-mips-cross"),
+        ("riscv64", "riscv64-linux-gnu",   "sudo apt-get install libc6-dev-riscv64-cross"),
+        ("i386",    "i386-linux-gnu",      "sudo apt-get install libc6-dev-i386-cross"),
+        ("amd64",   "x86_64-linux-gnu",    "sudo apt-get install libc6-dev-amd64-cross"),
     ]
-    for util in required_cmds:
-        if shutil.which(util[0]) is None:
-            missing.append(util)
-    for lib in required_libs:
-        usr_path = os.path.join("/usr",lib[1])
-        usr_lib_path = os.path.join("/usr/lib",lib[1])
-        if os.path.isdir(usr_path):
-            libs_path[lib[0]]=usr_path
-            print(f"{lib[0] } -> {usr_path}")
-        elif os.path.isdir(usr_lib_path):
-            libs_path[lib[0]]=usr_lib_path
-            print(f"{lib[0] } -> {usr_lib_path}")
-        else :
-            missing.append(lib)
-        
-    if missing:
-        dependencies_tips="\n".join([i[2] for i in missing])
 
-        sys.exit("Missing required dependencies: " + ", ".join([i[1] for i in missing]) + "\nHow to install them ?\n"+dependencies_tips)
-    else:
-        print("All required dependencies are installed.")
+    def __init__(self, binary_path, gdb_port=1235,
+                 disable_aslr=True, tmux_split=True,
+                 breakpoints=None, lib_override=None):
+        self.binary = binary_path
+        self.gdb_port = gdb_port
+        self.disable_aslr = disable_aslr
+        self.tmux_split = tmux_split
+        self.tmux_cmd = ["tmux", "splitw", "-h"]
+        self.breakpoints = breakpoints or []
+        self.lib_override = lib_override
+        self.libs_path = {}
+        self.qemu_cmd = None
 
-        return libs_path
+    def check_dependencies(self):
+        missing = []
+        libs = {}
+        for exe, desc, hint in self.REQUIRED_CMDS:
+            if shutil.which(exe) is None:
+                missing.append((desc, hint))
+        for arch, folder, hint in self.REQUIRED_LIBS:
+            if self.lib_override and os.path.isfile(self.lib_override) and arch == context.arch:
+                continue
+            if self.lib_override and os.path.isdir(self.lib_override):
+                libs[arch] = self.lib_override
+                continue
+            for base in ("/usr", "/usr/lib"):
+                path = os.path.join(base, folder)
+                if os.path.isdir(path):
+                    libs[arch] = path
+                    break
+            else:
+                missing.append((arch, hint))
+        if missing:
+            msgs = "\n".join(f"{name}: {tip}" for name, tip in missing)
+            sys.exit(f"Dépendances manquantes:\n{msgs}")
+        self.libs_path = libs
+        log.info("Dépendances OK: %s", libs)
+        return libs
 
-LIBS_PATH=check_dependencies()
+    def setup_context(self):
+        elf = ELF(self.binary)
+        context.arch = elf.arch
+        context.binary = self.binary
+        log.info(f"=== Contexte -> arch: {context.arch}, binary: {self.binary}")
 
+    def build_qemu_command(self):
+        arch = context.arch
+        if arch not in self.DEFAULT_QEMU:
+            raise ValueError(f"Architecture inconnue: {arch}")
+        base = self.DEFAULT_QEMU[arch]
+        if self.lib_override and os.path.isdir(self.lib_override):
+            lib_path = self.lib_override
+        else:
+            lib_path = self.libs_path.get(arch)
+        cmd = [base, "-g", str(self.gdb_port), "-L", lib_path, self.binary]
+        if self.disable_aslr:
+            cmd = ["setarch", os.uname().machine, "-R"] + cmd
+        return cmd
 
-  ##########################################
- ### Auto Arch pwntools based Debugger ####
-##########################################
+    def launch(self):
+        self.check_dependencies()
+        self.setup_context()
+        self.qemu_cmd = self.build_qemu_command()
+        log.info("QEMU command: %s", self.qemu_cmd)
 
-from pwn import *
+        if self.tmux_split and "TMUX" not in os.environ:
+            sys.exit("Erreur: lancez ce script dans tmux.")
 
-# Binary config
-BINARY = "./exemple"  ################## <- change this parametter ################## # -> you should copy the env of your remote target to align stack -> https://stackoverflow.com/questions/17775186/buffer-overflow-works-in-gdb-but-not-without-it/17775966#17775966
-ELF_BINARY = ELF(BINARY)
-DISABLE_ASLR = True
+        # prepare env
+        env = os.environ.copy()
+        if self.lib_override and os.path.isfile(self.lib_override):
+            env["LD_PRELOAD"] = os.path.abspath(self.lib_override)
+            log.info("LD_PRELOAD=%s", env["LD_PRELOAD"])
 
-# Set the architecture 
-context.arch = ELF_BINARY.arch
-context.binary = BINARY
-log.info(f"=== Context\n> arch : {context.arch}\n> binary :{context.binary}")
+        # launch QEMU with pwntools process
+        process_cmd = self.qemu_cmd
+        p = process(process_cmd, env=env)  # pwntools process
+        time.sleep(0.5)
+        log.info("QEMU démarré via pwntools, prête pour GDB.")
 
+        # attach GDB with tmux send-keys
+        self._attach_gdb()
+        return p
 
-# Setup for QEMU
-mapping = {
-    "arm":       "qemu-arm",
-    "aarch64":   "qemu-aarch64",
-    "mips":      "qemu-mips",
-    "riscv64":   "qemu-riscv64",
-    "i386":      "qemu-i386",
-    "amd64":     "qemu-x86_64",
-}
-if context.arch not in mapping:
-    log.info(f"[!] ERROR in qemu setup : {context.arch} not in mapping")
-    exit(1)
+    def _attach_gdb(self):
+        cmds = [f" -ex 'symbol-file {self.binary}'",
+                f" -ex 'set solib-search-path {self.libs_path.get(context.arch)}'",
+                f" -ex 'set architecture {context.arch}'",
+                f" -ex 'target remote localhost:{self.gdb_port}'",
+                " -ex 'unset env LINES'",
+                " -ex 'unset env COLUMNS'"]
+        for bp in self.breakpoints:
+            cmds.append(f" -ex 'b*{bp}'")
+        #cmds.append(" -ex continue")
+        gdb_cmd = ["gdb-multiarch"] + cmds
 
-QEMU = mapping[context.arch]
-GDB_PORT = 1235
+        subprocess.Popen(self.tmux_cmd + ["".join(gdb_cmd)])
+        log.info("GDB attaché on port %d.", self.gdb_port)
 
-# Configure the terminal (use tmux for split view) -> see https://www.redhat.com/en/blog/introduction-tmux-linux
-if "TMUX" not in os.environ:
-    sys.exit("Error: Please run this script inside a tmux session.")
-context.terminal = ["tmux", "splitw", "-h"]
-
-# Start the binary inside QEMU using the appropriate lib path
-quemu_start = [QEMU, "-g", str(GDB_PORT), "-L", LIBS_PATH[context.arch] ,BINARY] 
-
-disable_aslr=["setarch", os.uname().machine, "-R"] + quemu_start
-
-if DISABLE_ASLR :
-  qemu_process = disable_aslr
-else :
-  qemu_process = quemu_start
-
-
-p = process(qemu_process)
-log.info(" ".join(quemu_start))
-time.sleep(1)
-log.info("Started QEMU process; waiting for gdb to attach...")
-
-# GDB script to connect to QEMU
-
-user_script=["b*0x00400174",
-    "continue"
-]
-
-gdb_version = "gdb-multiarch"
-# Attach gdb-multiarch
-gdb_cmd = [
-    f"{gdb_version} ", #-> must use gdb-multiarch
-    f" -ex 'symbol-file {BINARY}' ",
-    f" -ex 'set solib-search-path {LIBS_PATH[context.arch]}' ",
-    f" -ex 'set architecture {context.arch}' ",
-    f" -ex 'target remote localhost:{GDB_PORT}' ", 
-    f" -ex 'unset env LINES' ", # for stack alignement -> https://stackoverflow.com/questions/17775186/buffer-overflow-works-in-gdb-but-not-without-it/17775966#17775966
-    f" -ex 'unset env COLUMNS' ", #for stack alignement -> https://stackoverflow.com/questions/17775186/buffer-overflow-works-in-gdb-but-not-without-it/17775966#17775966
-    " \n ".join([f"-ex '{user_line}'" for user_line in user_script])                  
-]
-gdb_cmd_line = "".join(gdb_cmd)
-subprocess.Popen(context.terminal + [gdb_cmd_line])
-log.info(f"GDB debugger attached to {GDB_PORT} :\n$ " + gdb_cmd_line)
-
-receive = p.recvuntil(b" name :",timeout=3600) # <- you must be waiting for something, or just do p.interactive()
-print("<",receive)
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description="MultiArch Debugger")
+    parser.add_argument('binary')
+    parser.add_argument('--port', type=int, default=1235)
+    parser.add_argument('--no-aslr', action='store_false', dest='disable_aslr')
+    parser.add_argument('--no-tmux', action='store_false', dest='tmux_split')
+    parser.add_argument('-b', '--break', dest='breakpoints', nargs='*', default=[] )
+    parser.add_argument('--lib', dest='lib_override')
+    args = parser.parse_args()
+    dbg = MultiArchDebugger(
+        args.binary, args.port, args.disable_aslr,
+        args.tmux_split, args.breakpoints, args.lib_override)
+    io = dbg.launch()
+    io.interactive()
