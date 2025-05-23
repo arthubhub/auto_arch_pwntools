@@ -2,6 +2,8 @@
 
 **AutoArchPwntools** est un outil de débogage multi-architecture basé sur Pwntools et QEMU. Il permet de lancer automatiquement un binaire dans QEMU, d’y attacher GDB Multiarch et de gérer les environnements de bibliothèques (libc, ld) pour diverses architectures (x86\_64, ARM32/64, MIPS, RISC-V, etc.).
 
+Ce projet est en développement, si vous trouvez une incompatibilité ou un dysfonctionnement, créez une issue !
+
 ---
 
 ## 🚀 Fonctionnalités
@@ -101,6 +103,19 @@ dbg = MultiArchDebugger(
 )
 dbg.launch().interactive()
 ```
+
+### Exemple :
+
+- Lancez docker et mettez en place l'environnement (fichiers et librairies si besoin). Créez un fichier de base pour tester votre exécutable.
+<img width="779" alt="image" src="https://github.com/user-attachments/assets/a3bc40b1-b286-40e9-b725-abdef6704003" />
+
+- Lancez tmux pour avoir deux écrans, changez d'écrans avec ctrl + b puis <- ou ->, scrollez avec ctrl + b puis '['. Ensuite, exécuter votre programme, n'oubliez pas de réaliser une action ( eg p.interactive() ), sinon le processus s'arrêtera.
+<img width="1447" alt="image" src="https://github.com/user-attachments/assets/ac685753-637a-437e-bc0f-e923299bd9bb" />
+
+- Le programme a détecté du 'MIPS 32', vous pouvez analyser le code dynamiquement avec gdb !
+Ensuite, créez votre exploit selon vos goûts et placez vos breakpoints là où vous avez besoin pour votre analyse.
+
+
 
 ---
 
