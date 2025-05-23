@@ -32,7 +32,7 @@ Ce projet est en développement, si vous trouvez une incompatibilité ou un dysf
 ### Télécharger le repo
 
 ```bash
-git clone [https://github.com/arthubhub/auto_arch_pwntools.git](https://github.com/arthubhub/auto_arch_pwntools.git)
+git clone https://github.com/arthubhub/auto_arch_pwntools.git
 ```
 
 ### Avec Docker
